@@ -1,3 +1,4 @@
+## About
 - This was built entirely by Qodo Gen Agent.
 ### View of the homepage
 ![Homepage](screenshots/Homepage.png "Main page")
