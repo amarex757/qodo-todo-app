@@ -92,8 +92,8 @@
     .btn-primary { background: #15803d; border-color: #166534; }
     .btn-primary:hover { background: #16a34a; }
 
-    /* Priority select and badges */
-    select {
+    /* Priority select, due date, and badges */
+    select, input[type="date"] {
       background: var(--btn);
       color: var(--text);
       border: 1px solid var(--border);
@@ -101,7 +101,7 @@
       border-radius: 10px;
       font-size: 14px;
     }
-    select:focus { outline: none; border-color: #0ea5e9; box-shadow: 0 0 0 3px #0ea5e933; }
+    select:focus, input[type="date"]:focus { outline: none; border-color: #0ea5e9; box-shadow: 0 0 0 3px #0ea5e933; }
 
     .badge {
       display: inline-block;
@@ -117,6 +117,8 @@
     .badge.p-low { background: #102a1f; color: #bbf7d0; border-color: #14532d; }
     .badge.p-medium { background: #3a2a0d; color: #fed7aa; border-color: #7c2d12; }
     .badge.p-high { background: #2a1313; color: #fecaca; border-color: #7f1d1d; }
+    .badge.due { background: #0b2a3a; color: #bae6fd; border-color: #075985; cursor: default; }
+    .text .badge { margin-left: 8px; }
 
     .toolbar {
       display: flex;
@@ -182,6 +184,8 @@
         <option value="medium" selected>Medium</option>
         <option value="low">Low</option>
       </select>
+      <label class="sr-only" for="new-due">Due date</label>
+      <input id="new-due" type="date" aria-label="Due date" />
       <button class="btn-primary" type="submit" aria-label="Add">Add</button>
     </form>
 
@@ -195,6 +199,7 @@
         <label class="sr-only" for="sort">Sort</label>
         <select id="sort" title="Sort order" aria-label="Sort">
           <option value="added">Sort: Added</option>
+          <option value="due">Sort: Due date (Soonest→Latest)</option>
           <option value="priority">Sort: Priority (High→Low)</option>
         </select>
         <button id="clear-completed" type="button" title="Clear completed tasks">Clear completed</button>
@@ -228,13 +233,14 @@
         clearCompleted: $('#clear-completed'),
         live: $('#live'),
         priority: $('#new-priority'),
+        due: $('#new-due'),
         sort: $('#sort')
       };
 
       let state = {
         todos: [],
         filter: 'all', // 'all' | 'active' | 'completed'
-        sort: 'added' // 'added' | 'priority'
+        sort: 'added' // 'added' | 'priority' | 'due'
       };
 
       function uid() {
@@ -252,13 +258,14 @@
               text: String(t.text || ''),
               completed: !!t.completed,
               priority: (t.priority === 'high' || t.priority === 'low') ? t.priority : 'medium',
-              createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now()
+              createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now(),
+              due: (typeof t.due === 'string' && t.due) ? t.due : null
             }));
           }
           if (data.filter === 'active' || data.filter === 'completed' || data.filter === 'all') {
             state.filter = data.filter;
           }
-          if (data.sort === 'priority' || data.sort === 'added') {
+          if (data.sort === 'priority' || data.sort === 'added' || data.sort === 'due') {
             state.sort = data.sort;
           }
         } catch (e) { /* ignore corrupt storage */ }
@@ -274,13 +281,14 @@
         render();
       }
 
-      function addTodo(text, priority) {
+      function addTodo(text, priority, dueStr) {
         text = text.trim();
         if (!text) return;
         const p = (priority === 'high' || priority === 'low' || priority === 'medium') ? priority : 'medium';
-        state.todos.unshift({ id: uid(), text, completed: false, priority: p, createdAt: Date.now() });
+        const due = (typeof dueStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dueStr)) ? dueStr : null;
+        state.todos.unshift({ id: uid(), text, completed: false, priority: p, createdAt: Date.now(), due });
         save();
-        announce(`Added: ${text} [${p}]`);
+        announce(`Added: ${text} [${p}]${due ? ' (Due ' + due + ')' : ''}`);
         render();
       }
 
@@ -347,6 +355,9 @@
         if (state.sort === 'priority') {
           const weight = { low: 0, medium: 1, high: 2 };
           arr.sort((a,b) => (weight[b.priority || 'medium'] - weight[a.priority || 'medium']) || ((b.createdAt||0) - (a.createdAt||0)));
+        } else if (state.sort === 'due') {
+          const due = (t) => (typeof t.due === 'string' && t.due) ? Date.parse(t.due) : Infinity;
+          arr.sort((a,b) => (due(a) - due(b)) || ((a.createdAt||0) - (b.createdAt||0)));
         }
         return arr;
       }
@@ -373,6 +384,12 @@
           const text = document.createElement('div');
           text.className = 'text';
           text.textContent = t.text;
+          if (t.due) {
+            const dv = document.createElement('span');
+            dv.className = 'badge due';
+            dv.textContent = 'Due: ' + t.due;
+            text.appendChild(dv);
+          }
 
           const editBtn = document.createElement('button');
           editBtn.type = 'button';
@@ -406,8 +423,8 @@
       // Event Listeners
       el.form.addEventListener('submit', (e) => {
         e.preventDefault();
-        addTodo(el.input.value, el.priority ? el.priority.value : 'medium');
-        el.input.value = '';
+        addTodo(el.input.value, el.priority ? el.priority.value : 'medium', el.due ? el.due.value : null);
+        if (el.form) el.form.reset();
         el.input.focus();
       });
 
@@ -419,7 +436,7 @@
 
       if (el.sort) {
         el.sort.addEventListener('change', (e) => {
-          const v = e.target.value === 'priority' ? 'priority' : 'added';
+          const v = (e.target.value === 'priority' || e.target.value === 'due') ? e.target.value : 'added';
           state.sort = v;
           save();
           render();
@@ -434,7 +451,7 @@
         const id = li.dataset.id;
         if (e.target.matches('input[type="checkbox"]')) {
           toggleTodo(id);
-        } else if (e.target.matches('.badge')) {
+        } else if (e.target.matches('.badge.p-low, .badge.p-medium, .badge.p-high')) {
           cyclePriority(id);
         } else if (e.target.matches('button.danger')) {
           deleteTodo(id);
