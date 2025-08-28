@@ -60,7 +60,7 @@
 
     .row {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 1fr auto auto;
       gap: 12px;
     }
 
@@ -92,6 +92,32 @@
     .btn-primary { background: #15803d; border-color: #166534; }
     .btn-primary:hover { background: #16a34a; }
 
+    /* Priority select and badges */
+    select {
+      background: var(--btn);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-size: 14px;
+    }
+    select:focus { outline: none; border-color: #0ea5e9; box-shadow: 0 0 0 3px #0ea5e933; }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      line-height: 1.4;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+    .badge.p-low { background: #102a1f; color: #bbf7d0; border-color: #14532d; }
+    .badge.p-medium { background: #3a2a0d; color: #fed7aa; border-color: #7c2d12; }
+    .badge.p-high { background: #2a1313; color: #fecaca; border-color: #7f1d1d; }
+
     .toolbar {
       display: flex;
       align-items: center;
@@ -117,7 +143,7 @@
 
     .todo-item {
       display: grid;
-      grid-template-columns: auto 1fr auto auto;
+      grid-template-columns: auto auto 1fr auto auto;
       align-items: center;
       gap: 10px;
       padding: 10px 12px;
@@ -150,6 +176,12 @@
     <form id="add-form" class="row" autocomplete="off" aria-label="Add a new task">
       <label class="sr-only" for="new-todo">New to‑do</label>
       <input id="new-todo" name="new-todo" type="text" placeholder="What needs to be done?" />
+      <label class="sr-only" for="new-priority">Priority</label>
+      <select id="new-priority" aria-label="Priority">
+        <option value="high">High</option>
+        <option value="medium" selected>Medium</option>
+        <option value="low">Low</option>
+      </select>
       <button class="btn-primary" type="submit" aria-label="Add">Add</button>
     </form>
 
@@ -160,6 +192,11 @@
         <button type="button" data-filter="completed" role="tab" aria-selected="false">Completed</button>
       </div>
       <div class="actions" style="display:flex; gap:8px; align-items:center;">
+        <label class="sr-only" for="sort">Sort</label>
+        <select id="sort" title="Sort order" aria-label="Sort">
+          <option value="added">Sort: Added</option>
+          <option value="priority">Sort: Priority (High→Low)</option>
+        </select>
         <button id="clear-completed" type="button" title="Clear completed tasks">Clear completed</button>
       </div>
     </div>
@@ -189,12 +226,15 @@
         empty: $('#empty'),
         filters: $('.filters'),
         clearCompleted: $('#clear-completed'),
-        live: $('#live')
+        live: $('#live'),
+        priority: $('#new-priority'),
+        sort: $('#sort')
       };
 
       let state = {
         todos: [],
-        filter: 'all' // 'all' | 'active' | 'completed'
+        filter: 'all', // 'all' | 'active' | 'completed'
+        sort: 'added' // 'added' | 'priority'
       };
 
       function uid() {
@@ -207,16 +247,25 @@
           if (!raw) return;
           const data = JSON.parse(raw);
           if (Array.isArray(data.todos)) {
-            state.todos = data.todos.map(t => ({ id: t.id || uid(), text: String(t.text || ''), completed: !!t.completed }));
+            state.todos = data.todos.map(t => ({
+              id: t.id || uid(),
+              text: String(t.text || ''),
+              completed: !!t.completed,
+              priority: (t.priority === 'high' || t.priority === 'low') ? t.priority : 'medium',
+              createdAt: typeof t.createdAt === 'number' ? t.createdAt : Date.now()
+            }));
           }
           if (data.filter === 'active' || data.filter === 'completed' || data.filter === 'all') {
             state.filter = data.filter;
+          }
+          if (data.sort === 'priority' || data.sort === 'added') {
+            state.sort = data.sort;
           }
         } catch (e) { /* ignore corrupt storage */ }
       }
 
       function save() {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ todos: state.todos, filter: state.filter }));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ todos: state.todos, filter: state.filter, sort: state.sort }));
       }
 
       function setFilter(filter) {
@@ -225,12 +274,13 @@
         render();
       }
 
-      function addTodo(text) {
+      function addTodo(text, priority) {
         text = text.trim();
         if (!text) return;
-        state.todos.unshift({ id: uid(), text, completed: false });
+        const p = (priority === 'high' || priority === 'low' || priority === 'medium') ? priority : 'medium';
+        state.todos.unshift({ id: uid(), text, completed: false, priority: p, createdAt: Date.now() });
         save();
-        announce(`Added: ${text}`);
+        announce(`Added: ${text} [${p}]`);
         render();
       }
 
@@ -240,6 +290,18 @@
         t.completed = !t.completed;
         save();
         announce(`${t.completed ? 'Completed' : 'Reopened'}: ${t.text}`);
+        render();
+      }
+
+      function cyclePriority(id) {
+        const t = state.todos.find(t => t.id === id);
+        if (!t) return;
+        const order = ['low','medium','high'];
+        const idx = order.indexOf(t.priority || 'medium');
+        const next = order[(idx + 1) % order.length];
+        t.priority = next;
+        save();
+        announce(`Priority updated: ${t.text} → ${next}`);
         render();
       }
 
@@ -276,11 +338,17 @@
       }
 
       function filteredTodos() {
+        let arr;
         switch (state.filter) {
-          case 'active': return state.todos.filter(t => !t.completed);
-          case 'completed': return state.todos.filter(t => t.completed);
-          default: return state.todos;
+          case 'active': arr = state.todos.filter(t => !t.completed); break;
+          case 'completed': arr = state.todos.filter(t => t.completed); break;
+          default: arr = state.todos.slice(); break;
         }
+        if (state.sort === 'priority') {
+          const weight = { low: 0, medium: 1, high: 2 };
+          arr.sort((a,b) => (weight[b.priority || 'medium'] - weight[a.priority || 'medium']) || ((b.createdAt||0) - (a.createdAt||0)));
+        }
+        return arr;
       }
 
       function render() {
@@ -296,6 +364,12 @@
           checkbox.checked = t.completed;
           checkbox.setAttribute('aria-label', 'Toggle complete');
 
+          const badge = document.createElement('span');
+          const p = t.priority || 'medium';
+          badge.className = 'badge p-' + p;
+          badge.textContent = p[0].toUpperCase() + p.slice(1);
+          badge.title = 'Click to change priority';
+
           const text = document.createElement('div');
           text.className = 'text';
           text.textContent = t.text;
@@ -309,7 +383,7 @@
           delBtn.textContent = 'Delete';
           delBtn.className = 'danger';
 
-          li.append(checkbox, text, editBtn, delBtn);
+          li.append(checkbox, badge, text, editBtn, delBtn);
           el.list.appendChild(li);
         }
 
@@ -318,10 +392,11 @@
         el.empty.hidden = state.todos.length !== 0;
 
         // filters UI
-        $$(".filters button").forEach(b => {
+        $(".filters button").forEach(b => {
           b.classList.toggle('active', b.dataset.filter === state.filter);
           b.setAttribute('aria-selected', String(b.dataset.filter === state.filter));
         });
+        if (el.sort) el.sort.value = state.sort;
       }
 
       function announce(msg) {
@@ -331,7 +406,7 @@
       // Event Listeners
       el.form.addEventListener('submit', (e) => {
         e.preventDefault();
-        addTodo(el.input.value);
+        addTodo(el.input.value, el.priority ? el.priority.value : 'medium');
         el.input.value = '';
         el.input.focus();
       });
@@ -342,6 +417,15 @@
         setFilter(btn.dataset.filter);
       });
 
+      if (el.sort) {
+        el.sort.addEventListener('change', (e) => {
+          const v = e.target.value === 'priority' ? 'priority' : 'added';
+          state.sort = v;
+          save();
+          render();
+        });
+      }
+
       el.clearCompleted.addEventListener('click', () => clearCompleted());
 
       el.list.addEventListener('click', (e) => {
@@ -350,6 +434,8 @@
         const id = li.dataset.id;
         if (e.target.matches('input[type="checkbox"]')) {
           toggleTodo(id);
+        } else if (e.target.matches('.badge')) {
+          cyclePriority(id);
         } else if (e.target.matches('button.danger')) {
           deleteTodo(id);
         } else if (e.target.matches('button')) {
